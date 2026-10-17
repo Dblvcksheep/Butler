@@ -1,0 +1,17 @@
+falkordb>=1.0
+httpx>=0.27
+dotenv
+python-telegram-bot>=21
+flask>=3
+gunicorn>=22
+cryptography>=42
+mcp>=1.12,<2          # MCP Python SDK 1.x (2.x has a different client API; not used here)
+jsonschema>=4
+celery>=5.4
+redis>=5
+psycopg[binary]>=3.2
+# tests only
+pytest>=8
+falkordblite>=0.1       # embedded FalkorDB
+pgserver>=0.1           # embedded PostgreSQL
+aiosmtpd>=1.4           # tests: a real in-process SMTP server
