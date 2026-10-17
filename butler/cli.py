@@ -5,11 +5,12 @@
   graphdoc                   regenerate docs/GRAPH.md (data model + every Cypher query the product uses)
 """
 import argparse
+import re
 
 
 from .config import Settings
 
-
+NVIDIA = re.compile(r"nvidia|nemotron", re.I)
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="butler.cli")
