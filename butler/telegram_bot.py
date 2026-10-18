@@ -55,6 +55,9 @@ def build(settings: Settings, rt: Runtime | None = None, request=None) -> Applic
             except Exception:
                 log.exception("handler failed")
                 await reply(u, "Something went wrong. It's been logged.")
+            except IndexError:                      # a handler read a missing argument: log it, but be friendly
+                log.exception("handler missing argument")
+                await reply(u, "A required argument is missing. Send /start to see how each command is used.")
         return wrapped
 
     # ---------- onboarding / models ----------
@@ -98,6 +101,9 @@ def build(settings: Settings, rt: Runtime | None = None, request=None) -> Applic
                     + "\n\nFallback goes down this list (or your /modelorder) when a model fails.")
 
     async def removekey(u, c):
+        if len(c.args) != 1 or not c.args[0].isdigit():
+            raise ValueError("usage: /removekey <key id>   (the number shown by /models)")
+
         cid = int(c.args[0])
         r = rt.creds.remove(uid(u), cid)
         if not r:
@@ -112,9 +118,15 @@ def build(settings: Settings, rt: Runtime | None = None, request=None) -> Applic
         await reply(u, "Order saved.")
 
     async def price(u, c):
-        if len(c.args) != 3 or not rt.creds.set_price(uid(u), int(c.args[0]), float(c.args[1]), float(c.args[2])):
-            raise ValueError("usage: /price <key id> <USD per 1M input tokens> <USD per 1M output tokens>")
+        usage_msg = "usage: /price <key id> <USD per 1M input tokens> <USD per 1M output tokens>"
+        try:
+            ok = len(c.args) == 3 and rt.creds.set_price(uid(u), int(c.args[0]), float(c.args[1]), float(c.args[2]))
+        except ValueError:                                  # not numbers
+            ok = False
+        if not ok:
+            raise ValueError(usage_msg)
         await reply(u, "Price saved. Cost tracking uses prices you enter; I don't guess them.")
+
 
     async def usage(u, c):
         now = time.time()
@@ -130,18 +142,21 @@ def build(settings: Settings, rt: Runtime | None = None, request=None) -> Applic
 
     async def budget(u, c):
         b = rt.creds.get_budget(uid(u))
-        if c.args and c.args[0] == "off":
-            rt.creds.set_budget(uid(u), None, None)
-        elif len(c.args) == 2 and c.args[0] == "tokens":
-            rt.creds.set_budget(uid(u), int(c.args[1]), b["daily_cost"])
-        elif len(c.args) == 2 and c.args[0] == "cost":
-            rt.creds.set_budget(uid(u), b["daily_tokens"], float(c.args[1]))
-        elif c.args:
-            raise ValueError("usage: /budget tokens N | cost X | off")
+        usage_msg = "usage: /budget tokens N | cost X | off"
+        try:
+            if c.args and c.args[0] == "off" and len(c.args) == 1:
+                rt.creds.set_budget(uid(u), None, None)
+            elif len(c.args) == 2 and c.args[0] == "tokens":
+                rt.creds.set_budget(uid(u), int(c.args[1]), b["daily_cost"])
+            elif len(c.args) == 2 and c.args[0] == "cost":
+                rt.creds.set_budget(uid(u), b["daily_tokens"], float(c.args[1]))
+            elif c.args:
+                raise ValueError(usage_msg)
+        except ValueError as e:
+            raise ValueError(usage_msg if "usage" not in str(e) else str(e))
         b = rt.creds.get_budget(uid(u))
         await reply(u, f"Daily budget: tokens={b['daily_tokens'] or 'off'}, cost={b['daily_cost'] or 'off'} "
                        "(rolling 24h; cost only counts models with a /price set).")
-
     # ---------- tools ----------
     async def connect(u, c):
         svc = (c.args[0].lower() if c.args else "")
@@ -187,6 +202,8 @@ def build(settings: Settings, rt: Runtime | None = None, request=None) -> Applic
         await reply(u, "Saved.")
 
     async def forget(u, c):
+        if not c.args:
+            raise ValueError("usage: /forget <preference key>   (see /prefs)")
         await reply(u, f"Deleted {rt.orch.memory(uid(u)).forget(' '.join(c.args))} record(s).")
 
     async def prefs(u, c):
@@ -216,12 +233,18 @@ def build(settings: Settings, rt: Runtime | None = None, request=None) -> Applic
                                              for p in t.prefs]) if t.prefs else ["Graph context used: none"]
         await reply(u, "\n".join(lines))
 
+    def company_name(c) -> str:
+        name = " ".join(c.args).strip()
+        if not re.search(r"[A-Za-z0-9]", name):             # an empty name would create a junk node in the graph
+            raise ValueError("usage: /contact <company name>")
+        return name
+
     async def contact(u, c):
-        rt.orch.memory(uid(u)).record_contact(" ".join(c.args))
+        rt.orch.memory(uid(u)).record_contact(company_name(c))
         await reply(u, "Recorded as contacted.")
 
     async def contacted(u, c):
-        t = rt.orch.memory(uid(u)).contact_trace(" ".join(c.args))
+        t = rt.orch.memory(uid(u)).contact_trace(company_name(c))
         await reply(u, f"Yes: {t['company']} via {t['channel']} on {datetime.fromtimestamp(t['at']):%Y-%m-%d}."
                     if t else "No record of contacting them.")
 
@@ -237,6 +260,8 @@ def build(settings: Settings, rt: Runtime | None = None, request=None) -> Applic
                        f"Note: {i['note']}", reply_markup=kb)
 
     async def status(u, c):
+        if not c.args:
+            raise ValueError("usage: /status <payment id>   (shown when you started the payment)")
         i = await asyncio.to_thread(rt.payments.reconcile, c.args[0], uid(u))
         await reply(u, f"{i['status']} (provider: {i['provider_status'] or 'n/a'})" + (f"\nerror: {i['error']}" if i["error"] else ""))
 
@@ -425,17 +450,30 @@ def build(settings: Settings, rt: Runtime | None = None, request=None) -> Applic
 
     async def chat(u, c):
         text = u.effective_message.text
+
         if KEY_LIKE.search(text):
             try:
                 await u.effective_message.delete()
             except Exception:
                 pass
-            return await reply(u, "That looks like an API key. I removed the message, but treat that key as exposed: "
-                                  "revoke it at the provider, then use /addkey for a secure link.")
+            return await reply(
+                u,
+                "That looks like an API key. I removed the message, but treat that key as exposed: "
+                "revoke it at the provider, then use /addkey for a secure link."
+            )
+
         need_model(u)
         r = await asyncio.to_thread(rt.orch.chat, uid(u), text)
+
         failed = [a for a in r.attempts if not a.ok]
-        await reply(u, r.text + (f"\n\n(via {r.provider}; {len(failed)} model(s) failed first)" if failed else ""))
+        response = (r.text or "").strip()
+
+        if not response:
+            response = "I couldn't generate a response. Please try again."
+        elif failed:
+            response += f"\n\n(via {r.provider}; {len(failed)} model(s) failed first)"
+
+        await reply(u, response)
 
     for name, fn in [("start", start),("help", start), ("addkey", addkey), ("models", models), ("removekey", removekey),
                      ("modelorder", modelorder), ("price", price), ("usage", usage), ("budget", budget),

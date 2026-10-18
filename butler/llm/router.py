@@ -74,6 +74,11 @@ class ModelRouter:
             try:
                 prov = self.factory(r["provider"], secret, r["model"])
                 text = prov.complete(system, messages, max_tokens)
+
+                if not isinstance(text, str) or not text.strip():
+                    raise LLMUnavailable("Provider returned an empty response")
+
+                text = text.strip()
             except LLMAuthError as e:
                 self.creds.set_status(r["id"], "invalid")          # stop using a rejected key
                 err = str(e)
