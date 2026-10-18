@@ -142,18 +142,6 @@ class PlanError(Exception):
         self.errors = errors
 
 
-def extract_json(text: str) -> dict:
-    t = text.strip()
-    t = re.sub(r"^```(?:json)?\s*|\s*```$", "", t)
-    try:
-        return json.loads(t)
-    except ValueError:
-        a, b = t.find("{"), t.rfind("}")
-        if a == -1 or b <= a:
-            raise ValueError("no JSON object in model output")
-        return json.loads(t[a:b + 1])
-
-
 def _refs(v) -> set[str]:
     if isinstance(v, str):
         return set(re.findall(r"\{\{(\w+)\}\}", v))
@@ -193,6 +181,11 @@ def validate_plan(raw, mem: Memory, tools: ToolStore) -> list[dict]:
         if not re.fullmatch(r"[A-Za-z0-9_]{1,20}", sid):
             errors.append(f"bad step id {sid!r}")
         agent, kind = s.get("agent", "assistant"), s.get("kind")
+        if kind is None:
+            has_tool_fields = "capability" in s or "args" in s
+            has_prompt = isinstance(s.get("prompt"), str) and bool(s["prompt"].strip())
+            if has_tool_fields != has_prompt:
+                kind = "tool" if has_tool_fields else "llm"
         deps = s.get("depends_on", [])
         if agent not in AGENTS:
             errors.append(f"{sid}: unknown agent {agent!r}")
