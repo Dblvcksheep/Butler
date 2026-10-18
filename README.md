@@ -13,6 +13,9 @@ Butler is an ongoing software project.
 
 Live: [https://t.me/D_butler_bot](https://t.me/D_butler_bot)
 
+
+Telegram Command Explanation in `docs/butler_command_reference.md`
+
 ## What it does
 
 -   **Bring your own model provider:** configure supported providers
