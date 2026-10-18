@@ -17,10 +17,73 @@ class _Wait(Exception):
     """Run is paused until a human decides on an approval."""
 
 
+MAX_ARG = 20000
+
+
+def _balanced_json(t: str):
+    starts = [i for i in (t.find("{"), t.find("[")) if i != -1]
+    if not starts:
+        return None
+    i = min(starts)
+    open_ch, close = ("{", "}") if t[i] == "{" else ("[", "]")
+    depth, instr, esc = 0, False, False
+    for k in range(i, len(t)):
+        ch = t[k]
+        if instr:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                instr = False
+        elif ch == '"':
+            instr = True
+        elif ch == open_ch:
+            depth += 1
+        elif ch == close:
+            depth -= 1
+            if depth == 0:
+                return t[i:k + 1]
+    return None
+
+
+def _clean_output(text: str) -> str:
+    """Strip code fences and surrounding prose; if the output contains valid JSON, return it normalized."""
+    t = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
+    block = _balanced_json(t)
+    if block:
+        try:
+            return json.dumps(json.loads(block, strict=False), ensure_ascii=False)
+        except ValueError:
+            pass
+    return t
+
+
 def fill(value, outputs: dict):
-    """Substitute {{step_id}} in string values (recursively) with earlier step outputs."""
+    """Substitute {{step_id}} in string values (recursively) with earlier step outputs.
+    - A value that is exactly one placeholder gets the cleaned output, untruncated.
+    - A placeholder inside a string that is itself JSON gets JSON-escaped text so the JSON stays valid.
+    - A missing or empty step output is an error, never a silent empty string."""
     if isinstance(value, str):
-        return re.sub(r"\{\{(\w+)\}\}", lambda m: outputs.get(m.group(1), "")[:4000], value)
+        def get(sid):
+            out = outputs.get(sid)
+            if out is None or not str(out).strip():
+                raise ToolArgError(f"step {sid} produced no output to insert into the tool arguments")
+            return str(out)
+
+        m = re.fullmatch(r"\s*\{\{(\w+)\}\}\s*", value)
+        if m:
+            cleaned = _clean_output(get(m.group(1)))
+            if len(cleaned) > MAX_ARG:
+                raise ToolArgError(f"output of step {m.group(1)} is too large ({len(cleaned)} chars)")
+            return cleaned
+        looks_json = value.lstrip()[:1] in ("{", "[")
+
+        def sub(mm):
+            raw = _clean_output(get(mm.group(1)))[:MAX_ARG]
+            return json.dumps(raw, ensure_ascii=False)[1:-1] if looks_json else raw
+
+        return re.sub(r"\{\{(\w+)\}\}", sub, value)
     if isinstance(value, dict):
         return {k: fill(v, outputs) for k, v in value.items()}
     if isinstance(value, list):

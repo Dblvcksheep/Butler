@@ -34,7 +34,7 @@ class WebSearch:
         try:
             with httpx.Client(transport=self.transport, timeout=15) as c:
                 r = c.get(os.environ.get("BRAVE_SEARCH_URL", URL), params={"q": args["query"].strip()[:300], "count": count},
-                          headers={"X-Subscription-Token": sec["api_key"], "Accept": "application/json"})
+                          headers={"X-Subscription-Token": sec["api_key"], "Accept": "application/json", "Accept-Encoding":"gzip"})
         except (httpx.TimeoutException, httpx.NetworkError) as e:
             raise ToolTransient(f"search unreachable: {type(e).__name__}")
         if r.status_code in (401, 403):

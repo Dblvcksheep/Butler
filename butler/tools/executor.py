@@ -7,6 +7,7 @@ import json
 import re
 import time
 from dataclasses import dataclass
+import logging
 
 import jsonschema
 
@@ -98,12 +99,17 @@ class ToolExecutor:
         self.memory_for = memory_for                  # user_id -> Memory | NullMemory
         self.on_resolved = None       # callable(approval dict): unblock the waiting run
 
+    logger = logging.getLogger(__name__)
+
     def _say(self, user_id, text, buttons=None):
         if self.notify:
             try:
                 self.notify(user_id, text, buttons)
             except Exception:
-                pass
+                logger.exception(
+                    "Tool notification failed for user %s",
+                    user_id,
+                )
 
     @staticmethod
     def _summary(args: dict) -> str:
@@ -225,6 +231,24 @@ class ToolExecutor:
         except (ToolFailed, ToolDenied, ToolArgError) as e:   # an approved action must never be left 'executing'
             self.tools.finish_approval(claimed["id"], "failed", error=str(e))
             out = ToolOutcome("error", str(e))
+        except Exception as e:
+            # An unexpected exception may happen after the external
+            # action succeeded, so don't blindly mark it as failed.
+            unknown = (
+                tool["financial"]
+                or tool["tool_id"] in self.irreversible
+            )
+            self.tools.finish_approval(
+                claimed["id"],
+                "unresolved" if unknown else "failed",
+                error=f"{type(e).__name__}: {e}",
+            )
+            out = ToolOutcome(
+                "error",
+                f"Outcome unknown; not retried ({type(e).__name__}: {e})"
+                if unknown
+                else f"Tool execution failed ({type(e).__name__}: {e})",
+            )
         self._resolved(claimed["id"])
         return out
 

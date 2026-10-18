@@ -16,7 +16,9 @@ import ssl
 import time
 from email.message import EmailMessage
 from email.utils import formataddr, formatdate, make_msgid
-
+import ast
+import hashlib
+import json
 from ..db import Db
 from ..graph.memory import norm
 from ..tools.executor import ToolArgError, ToolDenied, ToolFailed, ToolTransient
@@ -27,20 +29,43 @@ OPT_OUT = "\n\n--\nIf you'd rather not hear from me, reply 'unsubscribe' and I w
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
+def _try_load(s: str):
+    err = None
+    for variant in (s, re.sub(r",\s*([}\]])", r"\1", s)):      # second try: drop trailing commas
+        try:
+            return json.loads(variant, strict=False)           # strict=False allows raw newlines inside strings
+        except ValueError as e:
+            err = e
+    try:                                                       # Python-style list/dict (single quotes, True/None)
+        v = ast.literal_eval(s)
+        if isinstance(v, (list, dict)):
+            return v
+    except (ValueError, SyntaxError):
+        pass
+    raise err
+
+
 def parse_messages(raw) -> list[dict]:
     """Tolerant: a JSON list, or {"messages": [...]}, possibly wrapped in a markdown fence or prose."""
     if isinstance(raw, str):
         t = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
-        try:
-            raw = json.loads(t)
-        except ValueError:
-            a, b = t.find("["), t.rfind("]")
-            if a == -1 or b <= a:
-                raise ToolArgError("messages must be a JSON list of {to, subject, body}")
+        t = t.replace("\u201c", '"').replace("\u201d", '"') if t[:1] not in ('[', '{') else t
+        candidates = [t]
+        for o, c in (("[", "]"), ("{", "}")):
+            a, b = t.find(o), t.rfind(c)
+            if a != -1 and b > a:
+                candidates.append(t[a:b + 1])
+        err = None
+        for cand in candidates:
             try:
-                raw = json.loads(t[a:b + 1])
-            except ValueError:
-                raise ToolArgError("messages is not valid JSON")
+                raw = _try_load(cand)
+                break
+            except ValueError as e:
+                err = e
+        else:
+            raise ToolArgError(f"messages is not valid JSON ({str(err)[:120]}). Expected a JSON list of "
+                               f"{{to, subject, body, company}} with double quotes, escaped line breaks (\\n) "
+                               f"inside strings, and no trailing commas")
     if isinstance(raw, dict):
         raw = raw.get("messages")
     if not isinstance(raw, list) or not raw:
