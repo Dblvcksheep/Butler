@@ -2,11 +2,41 @@ import json
 
 import pytest
 
-from butler.planner import PlanError, describe_plan, make_plan
+from butler.planner import PlanError, describe_plan, make_plan, validate_plan
 
 
 def js(steps):
     return json.dumps({"steps": steps})
+
+
+def test_email_plan_requires_llm_draft_and_no_premature_contact_record():
+    class Mem:
+        def resolve_capability(self, cap):
+            return [{"tool_id": {"contacts.record": "contacts.record",
+                                 "email.send": "email.send_batch"}[cap]}]
+
+    class Tools:
+        schemas = {
+            "contacts.record": {"type": "object", "properties": {"companies": {"type": "string"}},
+                                "required": ["companies"]},
+            "email.send_batch": {"type": "object", "properties": {"messages": {"type": "string"}},
+                                 "required": ["messages"]},
+        }
+
+        def get_tool(self, tool_id):
+            return {"input_schema": self.schemas[tool_id]}
+
+    plan = {"steps": [
+        {"id": "s1", "agent": "operator", "kind": "tool", "capability": "contacts.record",
+         "args": {"companies": "Acme"}},
+        {"id": "s2", "agent": "writer", "kind": "llm", "prompt": "draft emails", "depends_on": ["s1"]},
+        {"id": "s3", "agent": "operator", "kind": "tool", "capability": "email.send",
+         "args": {"messages": "{{s1}}"}, "depends_on": ["s2"]},
+    ]}
+    with pytest.raises(PlanError) as e:
+        validate_plan(plan, Mem(), Tools())
+    assert "email messages must reference an llm step" in str(e.value)
+    assert "do not run contacts.record before email.send_batch" in str(e.value)
 
 
 S1 = {"id": "s1", "agent": "researcher", "kind": "tool", "capability": "data.search", "args": {"query": "AI news"}}

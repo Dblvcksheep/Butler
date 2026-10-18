@@ -128,6 +128,17 @@ def test_search_fetch_draft_then_nothing_is_sent_until_the_human_approves(rt, sm
     assert rt.orch.memory("1").contacted_batch(["Acme"])             # recorded in the graph
 
 
+def test_invalid_email_json_is_repaired_before_approval(rt, smtp):
+    setup_all(rt, smtp)
+    rt.script.extend(["Here are the application emails.", draft(("hello@acme.test", "Acme"))])
+    t = run_task(rt)
+    run = run_row(rt, t["id"])
+    saved_draft = rt.tasks.checkpoints(run["id"])["s3"]
+    assert run["status"] == "waiting"
+    assert json.loads(saved_draft)[0]["to"] == "hello@acme.test"
+    assert smtp.messages == []
+
+
 def test_second_run_does_not_email_the_same_company_again(rt, smtp):
     setup_all(rt, smtp)
     rt.script.append(draft(("hello@acme.test", "Acme")))
@@ -467,16 +478,33 @@ def test_planner_describes_our_tools_but_not_untrusted_mcp_ones_and_enforces_age
     rt.connect_service("1", "fake")
     plan = json.dumps({"steps": [
         {"id": "s1", "agent": "researcher", "kind": "tool", "capability": "web.search", "args": {"query": "x"}},
-        {"id": "s2", "agent": "operator", "kind": "tool", "capability": "email.send", "args": {"messages": "{{s1}}"}, "depends_on": ["s1"]}]})
+        {"id": "s2", "agent": "writer", "kind": "llm", "prompt": "draft emails as JSON", "depends_on": ["s1"]},
+        {"id": "s3", "agent": "operator", "kind": "tool", "capability": "email.send",
+         "args": {"messages": "{{s2}}"}, "depends_on": ["s2"]}]})
     spy = SpyRouter(plan)
     steps, _ = make_plan(spy, rt.orch.memory("1"), rt.tools, "1", "find jobs and email them")
-    assert [s["tool_id"] for s in steps] == ["web.search", "email.send_batch"]
+    assert [s.get("tool_id") for s in steps] == ["web.search", None, "email.send_batch"]
     assert "JSON list of {to, subject, body, company}" in spy.system and "needs human approval" in spy.system
+    assert "messages must reference an llm step" in spy.system
     assert "Never invent email addresses or URLs" in spy.system
     assert "Fake" not in spy.system.split("AVAILABLE CAPABILITIES:")[1].split("User preferences")[0].replace("fake.orders", "")  # no MCP description text
     bad = json.dumps({"steps": [{"id": "s1", "agent": "writer", "kind": "tool", "capability": "email.send", "args": {"messages": "x"}}]})
     with pytest.raises(PlanError):
         make_plan(SpyRouter(bad), rt.orch.memory("1"), rt.tools, "1", "goal")     # the writer agent has no tools
+
+
+def test_planner_rejects_tool_output_and_premature_contact_recording_for_email(rt, smtp):
+    setup_all(rt, smtp)
+    bad_plan = json.dumps({"steps": [
+        {"id": "s1", "agent": "operator", "kind": "tool", "capability": "contacts.record",
+         "args": {"companies": "Acme"}},
+        {"id": "s2", "agent": "writer", "kind": "llm", "prompt": "draft emails as JSON", "depends_on": ["s1"]},
+        {"id": "s3", "agent": "operator", "kind": "tool", "capability": "email.send",
+         "args": {"messages": "{{s1}}"}, "depends_on": ["s2"]}]})
+    with pytest.raises(PlanError) as e:
+        make_plan(SpyRouter(bad_plan), rt.orch.memory("1"), rt.tools, "1", "find jobs and email them")
+    assert "email messages must reference an llm step" in str(e.value)
+    assert "do not run contacts.record before email.send_batch" in str(e.value)
 
 
 def test_planner_cannot_use_email_until_it_is_connected(rt):

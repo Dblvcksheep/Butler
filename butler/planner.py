@@ -19,6 +19,9 @@ Rules:
 - When a step's output feeds a tool argument, tell that step to output EXACTLY the format the capability
   description asks for. If the argument holds JSON, the feeding step must output only the raw JSON: no code
   fences, no explanation, no text before or after it.
+- For email.send_batch, messages must reference an llm step that drafts the JSON email list, never a tool
+  output such as the status returned by contacts.record. email.send_batch records contacts only after emails
+  are successfully sent, so do not add a contacts.record step before it.
 - Never invent email addresses or URLs: use only ones present in the goal or in earlier step output.
 - Agents: researcher (web/read tools), writer (drafting, no tools), analyst (extraction, no tools), operator (any tool).
 - Anything that moves money or changes an external account is a tool step; the human will be asked to approve it.
@@ -243,6 +246,32 @@ def validate_plan(raw, mem: Memory, tools: ToolStore) -> list[dict]:
                 errors.append(f"{st['id']}: reference {{{{{r}}}}} does not point to another step in this plan")
             elif r not in st["depends_on"]:
                 st["depends_on"].append(r)       # auto-fix: a referenced step is always a dependency
+
+    steps_by_id = {st["id"]: st for st in out}
+    for st in out:
+        if st.get("tool_id") != "email.send_batch":
+            continue
+        for ref in sorted(_refs(st.get("args", {}).get("messages", ""))):
+            source = steps_by_id.get(ref)
+            if source and source["kind"] != "llm":
+                errors.append(f"{st['id']}: email messages must reference an llm step that drafts the JSON "
+                              f"email list, not tool output from {ref}")
+
+        pending, visited = list(st["depends_on"]), set()
+        while pending:
+            dep = pending.pop()
+            if dep in visited:
+                continue
+            visited.add(dep)
+            source = steps_by_id.get(dep)
+            if not source:
+                continue
+            if source.get("tool_id") == "contacts.record":
+                errors.append(f"{st['id']}: do not run contacts.record before email.send_batch; "
+                              "email.send_batch records successfully sent contacts")
+                break
+            pending.extend(source["depends_on"])
+
     if not errors:
         try:
             return topo_order(out)

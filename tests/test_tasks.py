@@ -1,3 +1,4 @@
+import json
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -8,6 +9,7 @@ from butler.llm.router import AllModelsFailed, RouterResult
 from butler.tasks.schedule import next_run, parse_schedule
 from butler.tasks.store import TaskError, TaskStore
 from butler.tasks.worker import TaskWorker
+from butler.tools.executor import ToolArgError, ToolOutcome
 
 
 class FakeOrch:
@@ -96,6 +98,51 @@ def test_worker_crash_recovered_via_stale_heartbeat():
     w = TaskWorker(s, FakeOrch(), now=lambda: later + 60)
     w.tick()
     assert s.get_run(run["id"])["status"] == "completed"
+
+
+def test_invalid_email_json_is_reformatted_and_tool_is_retried():
+    email_json = '[{"to":"hello@example.com","subject":"Backend role","body":"Hello","company":"Acme"}]'
+
+    class RepairOrch(FakeOrch):
+        def run_step(self, user_id, objective, prompt, scope, kind, role=""):
+            self.calls.append(prompt)
+            return RouterResult(email_json, "anthropic", "m")
+
+    class FakeExecutor:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, ctx, tool_id, args):
+            self.calls.append(args)
+            if len(self.calls) == 1:
+                raise ToolArgError("messages is not valid JSON")
+            return ToolOutcome("ok", "draft accepted")
+
+    class FakeStore:
+        def __init__(self):
+            self.checkpoints, self.waiting = {}, None
+
+        def save_checkpoint(self, run_id, step_id, output):
+            self.checkpoints[step_id] = output
+
+        def heartbeat(self, run_id, now):
+            pass
+
+    store, orch, executor = FakeStore(), RepairOrch(), FakeExecutor()
+    worker = TaskWorker(store, orch, executor=executor)
+    steps = [
+        {"id": "s1", "agent": "writer", "kind": "llm", "prompt": "Draft application emails", "depends_on": []},
+        {"id": "s2", "agent": "operator", "kind": "tool", "capability": "email.send",
+         "tool_id": "email.send_batch",
+         "args": {"messages": "{{s1}}"}, "depends_on": ["s1"]},
+    ]
+    outputs = {"s1": "Here are the application emails."}
+    result, _ = worker._step({"user_id": "1", "objective": "Apply for backend roles", "scope": None, "kind": "chat"},
+                             {"id": 1, "input": None}, steps[1], {s["id"]: s for s in steps}, outputs)
+
+    assert result == "draft accepted"
+    assert len(executor.calls) == 2 and json.loads(executor.calls[1]["messages"]) == json.loads(email_json)
+    assert outputs["s1"] == email_json and store.checkpoints["s1"] == email_json
 
 
 def test_pause_resume_cancel_and_ownership():
