@@ -74,8 +74,18 @@ class Db:
             sql = sql.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "BIGSERIAL PRIMARY KEY")
             sql = re.sub(r"\bBLOB\b", "BYTEA", sql)
             sql = re.sub(r"\bREAL\b", "DOUBLE PRECISION", sql)
+
         with self.lock:
-            self.conn.execute(sql)
+            if self.dialect == "postgres":
+                # Serialize schema changes across web, bot, and worker processes.
+                lock_id = 741852963
+                self.conn.execute("SELECT pg_advisory_lock(%s)", (lock_id,))
+                try:
+                    self.conn.execute(sql)
+                finally:
+                    self.conn.execute("SELECT pg_advisory_unlock(%s)", (lock_id,))
+            else:
+                self.conn.execute(sql)
 
     def insert_id(self, sql: str, params=()) -> int:
         with self.lock:
