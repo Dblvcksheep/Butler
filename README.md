@@ -233,11 +233,7 @@ not claims that the work is already implemented.
 
 ## AI-assisted development disclosure
 
-AI coding tools were used extensively during development, including for
-implementation, tests, and documentation. The maintainer is responsible
-for project direction, integration, review, testing, and technical
-decisions. Keep this disclosure accurate as contributors and tools
-change.
+AI coding tools were used extensively during Butler's development, including for implementation, testing, and documentation. The project maintainer is responsible for the project's direction, integration, code review, testing, and technical decisions.
 
 ## License
 
